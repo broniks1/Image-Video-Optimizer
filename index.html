@@ -4,8 +4,46 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Optimizer — Broniks</title>
-<link rel="stylesheet" href="https://pyscript.net/releases/2024.11.1/core.css">
-<script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>
+<link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+<script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+
+<!-- ===== JS-хелперы для скачивания и чтения файлов ===== -->
+<script>
+  window.getFileAsUint8 = async function (file) {
+    const buf = await file.arrayBuffer();
+    return new Uint8Array(buf);
+  };
+
+  window.downloadBytes = function (data, filename, mimeType) {
+    let uint8;
+    if (data instanceof Uint8Array) {
+      uint8 = data;
+    } else {
+      uint8 = new Uint8Array(data);
+    }
+    const blob = new Blob([uint8], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+  };
+
+  // Резервный таймаут на случай, если Python не загрузится
+  setTimeout(function () {
+    const el = document.getElementById('loading');
+    if (el && !el.classList.contains('hidden')) {
+      const t = document.getElementById('loadingText');
+      const h = document.getElementById('loadingHint');
+      if (t) t.textContent = 'Что-то пошло не так…';
+      if (h) h.textContent = 'Проверьте интернет и обновите страницу (Ctrl + F5)';
+    }
+  }, 45000);
+</script>
+
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -18,19 +56,41 @@
     --muted: #81988A;
     --border: #1D4028;
     --danger: #EF4444;
+    --danger-hover: #DC2626;
     --accent-dark: #08120C;
   }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Arial Rounded MT Bold', sans-serif;
+  html, body {
     background: var(--bg);
     color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Arial Rounded MT Bold', sans-serif;
     min-height: 100vh;
-    padding: 24px;
   }
+  body { padding: 20px; }
   .container { max-width: 1200px; margin: 0 auto; }
 
-  /* Header */
-  header { text-align: center; padding: 20px 0 24px; position: relative; }
+  /* ---- Видео-баннер ---- */
+  .video-banner {
+    background: linear-gradient(90deg, rgba(239,68,68,0.12), rgba(239,68,68,0.06));
+    border: 1px solid rgba(239,68,68,0.4);
+    color: #FCA5A5;
+    border-radius: 12px;
+    padding: 12px 18px;
+    font-size: 13px;
+    text-align: center;
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+  .video-banner b { color: #FECACA; }
+  .video-banner a {
+    color: var(--green);
+    font-weight: bold;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .video-banner a:hover { color: var(--green-hover); }
+
+  /* ---- Header ---- */
+  header { text-align: center; padding: 8px 0 22px; position: relative; }
   .lang-switch {
     position: absolute; top: 0; right: 0;
     background: var(--card); border: 1px solid var(--border);
@@ -40,23 +100,24 @@
     background: var(--card2); color: var(--muted); border: none;
     padding: 6px 14px; border-radius: 7px; cursor: pointer;
     font-weight: bold; font-size: 12px; transition: 0.2s;
+    font-family: inherit;
   }
   .lang-btn.active { background: var(--green); color: #031108; }
   .lang-btn:hover { color: var(--text); }
   h1 {
-    font-size: 42px; font-weight: 800;
+    font-size: 38px; font-weight: 800;
     color: var(--text); margin-bottom: 6px; letter-spacing: -0.5px;
   }
   .subtitle { color: var(--muted); font-size: 14px; }
 
-  /* Main grid */
+  /* ---- Main grid ---- */
   .main {
-    display: grid; grid-template-columns: 380px 1fr;
+    display: grid; grid-template-columns: 400px 1fr;
     gap: 16px; margin-top: 16px;
   }
   @media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
 
-  /* Panels */
+  /* ---- Panels ---- */
   .panel {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 18px; padding: 20px;
@@ -66,7 +127,7 @@
     letter-spacing: 0.5px; margin-bottom: 10px;
   }
 
-  /* Buttons */
+  /* ---- Buttons ---- */
   .btn {
     width: 100%; border: none; border-radius: 11px;
     padding: 14px; font-size: 15px; font-weight: bold;
@@ -83,12 +144,15 @@
 
   .file-count { text-align: center; color: var(--muted); font-size: 12px; margin: 10px 0; }
 
-  /* Settings */
+  /* ---- Settings ---- */
   .settings {
     background: var(--card2); border-radius: 13px;
     padding: 14px; margin-top: 6px;
   }
-  .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .setting-row {
+    display: flex; justify-content: space-between;
+    align-items: center; margin-bottom: 6px;
+  }
   .setting-row:not(:first-child) { margin-top: 14px; }
   .setting-label { color: var(--text); font-size: 13px; }
   .setting-value { color: var(--green); font-weight: bold; font-size: 13px; }
@@ -97,13 +161,13 @@
     height: 6px; border-radius: 3px; cursor: pointer;
   }
   select {
-    background: var(--card); color: var(--text); border: 1px solid var(--border);
-    border-radius: 8px; padding: 6px 10px; font-family: inherit; font-size: 13px;
-    cursor: pointer; outline: none;
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 13px;
+    cursor: pointer; outline: none; width: 100%; margin-top: 4px;
   }
-  .hint { color: var(--muted); font-size: 10px; margin-top: 2px; }
 
-  /* Status + progress */
+  /* ---- Status / progress ---- */
   .status { text-align: center; color: var(--muted); font-size: 12px; margin: 14px 0 8px; }
   .progress {
     background: var(--card2); height: 8px; border-radius: 4px;
@@ -114,7 +178,7 @@
     transition: width 0.3s; border-radius: 4px;
   }
 
-  /* Developer badge */
+  /* ---- Developer badge ---- */
   .dev-badge {
     background: var(--accent-dark); border: 1px solid var(--green);
     border-radius: 12px; padding: 12px 14px; margin-top: 16px;
@@ -126,14 +190,15 @@
     font-family: 'Arial Rounded MT Bold', sans-serif;
   }
 
-  /* Queue */
+  /* ---- Queue ---- */
   .queue {
     background: var(--accent-dark); border-radius: 12px;
-    padding: 12px; min-height: 400px; max-height: 600px;
+    padding: 12px; min-height: 400px; max-height: 620px;
     overflow-y: auto;
   }
   .empty {
-    color: var(--muted); text-align: center; padding: 80px 20px; font-size: 14px;
+    color: var(--muted); text-align: center;
+    padding: 80px 20px; font-size: 14px;
   }
   .file-card {
     background: var(--card2); border: 1px solid var(--border);
@@ -155,33 +220,29 @@
     margin-bottom: 3px;
   }
   .file-size { color: var(--muted); font-size: 11px; }
-  .file-result { color: var(--green); font-size: 11px; margin-top: 3px; font-weight: bold; }
-  .file-error { color: var(--danger); font-size: 11px; margin-top: 3px; }
+  .file-result { color: var(--green); font-size: 11px; margin-top: 4px; font-weight: bold; }
+  .file-error { color: var(--danger); font-size: 11px; margin-top: 4px; }
   .remove-btn {
     background: var(--danger); color: white; border: none;
     width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
     font-weight: bold; font-size: 14px; flex-shrink: 0;
+    transition: 0.2s;
   }
-  .remove-btn:hover { background: #DC2626; }
-
-  /* Web-only notice */
-  .web-notice {
-    background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
-    color: #FCA5A5; padding: 10px 14px; border-radius: 10px;
-    font-size: 12px; margin-top: 12px; text-align: center;
-  }
+  .remove-btn:hover { background: var(--danger-hover); }
 
   footer {
-    text-align: center; padding: 30px 0 10px;
+    text-align: center; padding: 26px 0 8px;
     color: var(--muted); font-size: 11px;
   }
+  footer a { color: var(--green); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
 
-  /* Loading overlay */
+  /* ---- Loading overlay ---- */
   #loading {
     position: fixed; inset: 0; background: var(--bg);
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; z-index: 9999;
-    transition: opacity 0.5s;
+    transition: opacity 0.6s;
   }
   #loading.hidden { opacity: 0; pointer-events: none; }
   .spinner {
@@ -190,38 +251,49 @@
     animation: spin 1s linear infinite; margin-bottom: 16px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #loading p { color: var(--green); font-weight: bold; }
-  #loading small { color: var(--muted); margin-top: 8px; }
+  #loadingText { color: var(--green); font-weight: bold; }
+  #loadingHint { color: var(--muted); margin-top: 8px; font-size: 13px; }
 </style>
 </head>
 <body>
 
+<!-- ================= LOADING OVERLAY ================= -->
 <div id="loading">
   <div class="spinner"></div>
-  <p>Загрузка Python-движка…</p>
-  <small>Первый запуск занимает 10–20 секунд</small>
+  <p id="loadingText">Загрузка Python-движка…</p>
+  <small id="loadingHint">Первый запуск занимает 10–20 секунд</small>
 </div>
 
 <div class="container">
 
+  <!-- ================= ВИДЕО-БАННЕР ================= -->
+  <div class="video-banner" id="videoBanner">
+    🎬 <b>Сжатие видео недоступно в веб-версии.</b>
+    Полная версия с поддержкой видео (FFmpeg) доступна в
+    <a href="https://github.com/broniks1/Image-Video-Optimizer/releases" target="_blank" rel="noopener">
+      EXE-файле →
+    </a>
+  </div>
+
+  <!-- ================= HEADER ================= -->
   <header>
     <div class="lang-switch">
       <button class="lang-btn active" id="btn-ru">RU</button>
       <button class="lang-btn" id="btn-en">EN</button>
     </div>
-    <h1 id="title">Image Optimizer</h1>
-    <p class="subtitle" id="subtitle">Быстрая оптимизация изображений в браузере</p>
+    <h1 id="titleText">Image Optimizer</h1>
+    <p class="subtitle" id="subtitleText">Быстрая оптимизация изображений в браузере</p>
   </header>
 
   <div class="main">
 
-    <!-- LEFT PANEL -->
+    <!-- ================= LEFT PANEL ================= -->
     <div class="panel">
       <input type="file" id="fileInput" accept="image/*" multiple hidden>
       <button class="btn btn-primary" id="addBtn">＋ Добавить файлы</button>
       <div class="file-count" id="fileCount">Добавьте файлы</div>
 
-      <div class="panel-title">⚙ Настройки</div>
+      <div class="panel-title" id="settingsTitle">⚙ Настройки</div>
       <div class="settings">
         <div class="setting-row">
           <span class="setting-label" id="qualityLabel">Качество</span>
@@ -232,7 +304,7 @@
         <div class="setting-row">
           <span class="setting-label" id="resizeLabel">Максимальная ширина</span>
         </div>
-        <select id="resizeSelect" style="width: 100%; margin-top: 4px;">
+        <select id="resizeSelect">
           <option value="0">Исходный размер</option>
           <option value="1920">1920 px</option>
           <option value="1600">1600 px</option>
@@ -242,7 +314,7 @@
         </select>
       </div>
 
-      <div class="status" id="status">Готово к оптимизации</div>
+      <div class="status" id="statusText">Готово к оптимизации</div>
       <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
 
       <button class="btn btn-primary" id="optimizeBtn" style="padding: 16px; font-size: 16px;">
@@ -254,13 +326,9 @@
         <span class="dev-dot">●</span>
         <span class="dev-name">Developer Broniks</span>
       </div>
-
-      <div class="web-notice" id="webNotice">
-        🌐 Веб-версия: сжатие видео недоступно в браузере
-      </div>
     </div>
 
-    <!-- RIGHT PANEL -->
+    <!-- ================= RIGHT PANEL ================= -->
     <div class="panel">
       <div class="panel-title" id="previewTitle">Очередь файлов</div>
       <div class="queue" id="queue">
@@ -270,24 +338,26 @@
 
   </div>
 
-  <footer>
-    🔒 Файлы обрабатываются локально в вашем браузере
+  <footer id="footerText">
+    🔒 Файлы обрабатываются локально в вашем браузере ·
+    <a href="https://github.com/broniks1/Image-Video-Optimizer/releases" target="_blank" rel="noopener">
+      Скачать EXE с поддержкой видео
+    </a>
   </footer>
 
 </div>
 
-<!-- ==================================================== -->
-<!-- PYTHON LOGIC -->
-<!-- ==================================================== -->
+<!-- ================================================================ -->
+<!-- ==================== PYTHON (PyScript) ========================= -->
+<!-- ================================================================ -->
 <script type="py" config='{"packages":["pillow"]}'>
 from pyscript import document, window, when
-from js import Blob, URL, Uint8Array
 import io
 import traceback
 from PIL import Image
 
 # ========== STATE ==========
-files = []          # list of JS File objects
+files = []
 lang = "ru"
 
 TXT = {
@@ -308,14 +378,16 @@ TXT = {
         "processing": "Обработка",
         "done": "Оптимизация завершена",
         "image": "🖼 Фото",
-        "video": "🎬 Видео (не поддерживается)",
-        "unsupported": "Неподдерживаемый формат",
+        "video": "🎬 Видео",
+        "unsupported": "Формат не поддерживается в веб-версии",
+        "video_skip": "Видео можно сжать только в EXE-версии",
         "before": "До",
         "after": "После",
         "saved": "Сэкономлено",
         "error": "Ошибка",
-        "web_notice": "🌐 Веб-версия: сжатие видео недоступно в браузере",
-        "privacy": "🔒 Файлы обрабатываются локально в вашем браузере"
+        "footer": "🔒 Файлы обрабатываются локально в вашем браузере · ",
+        "footer_link": "Скачать EXE с поддержкой видео",
+        "banner": "🎬 Сжатие видео недоступно в веб-версии. Полная версия с поддержкой видео (FFmpeg) доступна в EXE-файле →"
     },
     "en": {
         "title": "Image Optimizer",
@@ -334,14 +406,16 @@ TXT = {
         "processing": "Processing",
         "done": "Optimization complete",
         "image": "🖼 Image",
-        "video": "🎬 Video (not supported)",
-        "unsupported": "Unsupported format",
+        "video": "🎬 Video",
+        "unsupported": "Format not supported in web version",
+        "video_skip": "Videos can only be compressed in the EXE version",
         "before": "Before",
         "after": "After",
         "saved": "Saved",
         "error": "Error",
-        "web_notice": "🌐 Web version: video compression unavailable in browser",
-        "privacy": "🔒 Files are processed locally in your browser"
+        "footer": "🔒 Files are processed locally in your browser · ",
+        "footer_link": "Download EXE with video support",
+        "banner": "🎬 Video compression is not available in the web version. The full version with video support (FFmpeg) is available in the EXE file →"
     }
 }
 
@@ -362,28 +436,43 @@ def is_image(name):
 def is_video(name):
     return name.lower().endswith(('.mp4', '.mov', '.avi', '.webm', '.mkv', '.m4v'))
 
-# ========== LANGUAGE ==========
+# ========== UI UPDATE ==========
 def update_ui_text():
-    document.getElementById("title").textContent = t("title")
-    document.getElementById("subtitle").textContent = t("subtitle")
+    document.getElementById("titleText").textContent = t("title")
+    document.getElementById("subtitleText").textContent = t("subtitle")
     document.getElementById("addBtn").textContent = t("add")
     document.getElementById("previewTitle").textContent = t("preview")
+    document.getElementById("settingsTitle").textContent = t("settings")
     document.getElementById("qualityLabel").textContent = t("quality")
     document.getElementById("resizeLabel").textContent = t("resize")
     document.getElementById("optimizeBtn").textContent = t("optimize")
     document.getElementById("clearBtn").textContent = t("clear")
-    document.getElementById("webNotice").textContent = t("web_notice")
-    document.querySelector("footer").textContent = t("privacy")
 
-    # Update first option in resize select
+    banner = document.getElementById("videoBanner")
+    banner.innerHTML = t("banner").replace(
+        "EXE-файле →",
+        '<a href="https://github.com/broniks1/Image-Video-Optimizer/releases" target="_blank" rel="noopener">EXE-файле →</a>'
+    ).replace(
+        "EXE file →",
+        '<a href="https://github.com/broniks1/Image-Video-Optimizer/releases" target="_blank" rel="noopener">EXE file →</a>'
+    )
+
+    footer = document.getElementById("footerText")
+    footer.innerHTML = (
+        t("footer") +
+        '<a href="https://github.com/broniks1/Image-Video-Optimizer/releases" target="_blank" rel="noopener">' +
+        t("footer_link") + '</a>'
+    )
+
     sel = document.getElementById("resizeSelect")
     if sel.options.length > 0:
-        sel.options[0].textContent = t("original")
+        sel.options.item(0).textContent = t("original")
 
     if not files:
         document.getElementById("fileCount").textContent = t("none")
         document.getElementById("emptyLabel").textContent = t("none")
 
+# ========== LANGUAGE BUTTONS ==========
 @when("click", "#btn-ru")
 def set_ru(e):
     global lang
@@ -402,7 +491,7 @@ def set_en(e):
     update_ui_text()
     render_queue()
 
-# ========== FILE HANDLING ==========
+# ========== FILE INPUT ==========
 @when("click", "#addBtn")
 def on_add(e):
     document.getElementById("fileInput").click()
@@ -410,7 +499,10 @@ def on_add(e):
 @when("change", "#fileInput")
 async def on_files_selected(e):
     file_input = document.getElementById("fileInput")
-    for f in file_input.files:
+    file_list = file_input.files
+    count = file_list.length
+    for i in range(count):
+        f = file_list.item(i)
         files.append(f)
     file_input.value = ""
     render_queue()
@@ -419,11 +511,12 @@ async def on_files_selected(e):
 def on_clear(e):
     files.clear()
     document.getElementById("progressBar").style.width = "0%"
-    document.getElementById("status").textContent = t("ready")
-    document.getElementById("status").style.color = "var(--muted)"
+    status = document.getElementById("statusText")
+    status.textContent = t("ready")
+    status.style.color = "var(--muted)"
     render_queue()
 
-# ========== RENDER QUEUE ==========
+# ========== QUEUE RENDER ==========
 def render_queue():
     queue = document.getElementById("queue")
     queue.innerHTML = ""
@@ -438,42 +531,45 @@ def render_queue():
 
     document.getElementById("fileCount").textContent = f"{len(files)} {t('count')}"
 
-    for idx, f in enumerate(files):
+    for idx in range(len(files)):
+        f = files[idx]
         card = document.createElement("div")
         card.className = "file-card"
 
+        # --- Thumb ---
         thumb = document.createElement("div")
         thumb.className = "thumb"
-
-        if is_image(f.name):
+        fname = f.name
+        if is_image(fname):
             try:
-                url = URL.createObjectURL(f)
+                url = window.URL.createObjectURL(f)
                 img = document.createElement("img")
                 img.src = url
                 thumb.appendChild(img)
             except Exception:
                 thumb.textContent = "🖼"
-        elif is_video(f.name):
+        elif is_video(fname):
             thumb.textContent = "🎬"
         else:
             thumb.textContent = "❓"
 
+        # --- Info ---
         info = document.createElement("div")
         info.className = "file-info"
 
         type_div = document.createElement("div")
         type_div.className = "file-type"
-        if is_image(f.name):
+        if is_image(fname):
             type_div.textContent = t("image")
-        elif is_video(f.name):
+        elif is_video(fname):
             type_div.textContent = t("video")
         else:
             type_div.textContent = "❓"
 
         name_div = document.createElement("div")
         name_div.className = "file-name"
-        name_div.textContent = f.name
-        name_div.title = f.name
+        name_div.textContent = fname
+        name_div.title = fname
 
         size_div = document.createElement("div")
         size_div.className = "file-size"
@@ -488,41 +584,45 @@ def render_queue():
         info.appendChild(size_div)
         info.appendChild(result_div)
 
+        # --- Remove ---
         remove = document.createElement("button")
         remove.className = "remove-btn"
         remove.textContent = "✕"
         remove.dataset.idx = str(idx)
-        remove.onclick = make_remove_handler(idx)
 
         card.appendChild(thumb)
         card.appendChild(info)
         card.appendChild(remove)
         queue.appendChild(card)
 
-def make_remove_handler(idx):
-    def handler(e):
-        if 0 <= idx < len(files):
-            files.pop(idx)
-            render_queue()
-    return handler
+# ========== EVENT DELEGATION FOR REMOVE BUTTONS ==========
+@when("click", "#queue")
+def on_queue_click(e):
+    target = e.target
+    try:
+        if target.classList.contains("remove-btn"):
+            idx = int(target.dataset.idx)
+            if 0 <= idx < len(files):
+                files.pop(idx)
+                render_queue()
+    except Exception:
+        pass
 
-# ========== SLIDERS ==========
+# ========== QUALITY SLIDER ==========
 @when("input", "#qualitySlider")
 def on_quality(e):
     val = int(document.getElementById("qualitySlider").value)
     document.getElementById("qualityValue").textContent = f"{val}%"
 
-# ========== CORE: COMPRESS IMAGE ==========
-def compress_image_bytes(data: bytes, quality: int, max_width: int):
+# ========== IMAGE COMPRESSION ==========
+def compress_image_bytes(data: bytes, quality: int, max_width: int) -> bytes:
     img = Image.open(io.BytesIO(data))
 
-    # Convert RGBA/P/LA to RGB for JPEG
     if img.mode in ('RGBA', 'P', 'LA'):
         img = img.convert('RGB')
     elif img.mode != 'RGB':
         img = img.convert('RGB')
 
-    # Resize if needed
     if max_width and img.width > max_width:
         ratio = max_width / img.width
         new_h = int(img.height * ratio)
@@ -549,32 +649,44 @@ async def on_optimize(e):
     total_before = 0
     total_after = 0
     processed = 0
+    skipped_video = 0
 
-    for idx, f in enumerate(list(files)):
+    for idx in range(len(files)):
+        f = files[idx]
+        fname = f.name
+
         result_el = document.getElementById(f"result-{idx}")
         if result_el:
             result_el.textContent = ""
             result_el.className = "file-result"
 
-        document.getElementById("status").textContent = f"{t('processing')}: {f.name}"
-        document.getElementById("status").style.color = "var(--text)"
+        status = document.getElementById("statusText")
+        status.textContent = f"{t('processing')}: {fname}"
+        status.style.color = "var(--text)"
 
-        if is_video(f.name):
+        # --- Video ---
+        if is_video(fname):
+            skipped_video += 1
+            if result_el:
+                result_el.textContent = f"🚫 {t('video_skip')}"
+                result_el.className = "file-error"
+            progress = ((idx + 1) / total) * 100
+            document.getElementById("progressBar").style.width = f"{progress}%"
+            continue
+
+        # --- Unsupported ---
+        if not is_image(fname):
             if result_el:
                 result_el.textContent = f"⚠ {t('unsupported')}"
                 result_el.className = "file-error"
+            progress = ((idx + 1) / total) * 100
+            document.getElementById("progressBar").style.width = f"{progress}%"
             continue
 
-        if not is_image(f.name):
-            if result_el:
-                result_el.textContent = f"⚠ {t('unsupported')}"
-                result_el.className = "file-error"
-            continue
-
+        # --- Image ---
         try:
-            array_buffer = await f.arrayBuffer()
-            data = bytes(Uint8Array.new(array_buffer).to_py())
-
+            u8 = await window.getFileAsUint8(f)
+            data = u8.to_py()
             before_size = len(data)
             total_before += before_size
 
@@ -583,29 +695,20 @@ async def on_optimize(e):
             total_after += after_size
             processed += 1
 
-            # Auto-download
-            stem = f.name.rsplit(".", 1)[0]
+            stem = fname.rsplit(".", 1)[0]
             out_name = f"{stem}_optimized.jpg"
 
-            blob = Blob.new(
-                [Uint8Array.new(bytearray(compressed))],
-                {"type": "image/jpeg"}
-            )
-            url = URL.createObjectURL(blob)
-            a = document.createElement("a")
-            a.href = url
-            a.download = out_name
-            document.body.appendChild(a)
-            a.click()
-            a.remove()
+            # Копируем в обычный list int, чтобы избежать JsProxy проблем
+            js_arr = list(compressed)
+            window.downloadBytes(js_arr, out_name, "image/jpeg")
 
             saved = before_size - after_size
             pct = (saved / before_size * 100) if before_size else 0
 
             if result_el:
                 result_el.textContent = (
-                    f"✓ {t('after')}: {format_size(after_size)} "
-                    f"({t('saved')}: {format_size(saved)} / {pct:.1f}%)"
+                    f"✓ {t('after')}: {format_size(after_size)}  "
+                    f"|  {t('saved')}: {format_size(saved)} ({pct:.1f}%)"
                 )
                 result_el.className = "file-result"
 
@@ -615,17 +718,27 @@ async def on_optimize(e):
                 result_el.className = "file-error"
             print("ERROR:", traceback.format_exc())
 
-        # Progress
         progress = ((idx + 1) / total) * 100
         document.getElementById("progressBar").style.width = f"{progress}%"
 
+    # ===== Итог =====
     total_saved = total_before - total_after
     total_pct = (total_saved / total_before * 100) if total_before else 0
 
-    document.getElementById("status").textContent = (
-        f"✓ {t('done')}! {t('saved')}: {format_size(total_saved)} ({total_pct:.1f}%)"
-    )
-    document.getElementById("status").style.color = "var(--green)"
+    status = document.getElementById("statusText")
+    status.style.color = "var(--green)"
+
+    if processed > 0:
+        status.textContent = (
+            f"✓ {t('done')}! {t('saved')}: "
+            f"{format_size(total_saved)} ({total_pct:.1f}%)"
+        )
+    else:
+        status.textContent = t("done")
+
+    if skipped_video > 0:
+        status.textContent += f"  •  🚫 {skipped_video} видео пропущено"
+
     document.getElementById("progressBar").style.width = "100%"
 
     btn.disabled = False
@@ -638,7 +751,7 @@ def hide_loading():
 
 update_ui_text()
 hide_loading()
-print("✅ Python ready, Pillow loaded")
+print("✅ Python ready")
 </script>
 
 </body>
