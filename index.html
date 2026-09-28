@@ -1,0 +1,811 @@
+import os
+import threading
+import subprocess
+import customtkinter as ctk
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+from pathlib import Path
+
+try:
+    import imageio_ffmpeg
+    HAS_FFMPEG = True
+except ImportError:
+    HAS_FFMPEG = False
+
+ctk.set_appearance_mode("dark")
+
+# ================= COLORS =================
+
+BG = "#07110B"
+CARD = "#0D1C13"
+CARD2 = "#12281A"
+GREEN = "#22C55E"
+GREEN_HOVER = "#16A34A"
+TEXT = "#E8F5EC"
+MUTED = "#81988A"
+BORDER = "#1D4028"
+DANGER = "#EF4444"
+DANGER_HOVER = "#DC2626"
+ACCENT_DARK = "#08120C"
+
+# ================= TEXT =================
+
+TXT = {
+    "ru": {
+        "title": "Image & Video Optimizer",
+        "subtitle": "Быстрая оптимизация изображений и видео",
+        "select": "＋  Добавить файлы",
+        "files": "файлов в очереди",
+        "preview": "Очередь файлов",
+        "settings": "Настройки",
+        "quality": "Качество фото",
+        "vid_quality": "Качество видео (CRF)",
+        "resize": "Максимальная ширина",
+        "original": "Исходный размер",
+        "optimize": "⚡  Оптимизировать все",
+        "ready": "Готово к оптимизации",
+        "delete": "Удалить",
+        "clear": "Очистить всё",
+        "none": "Добавьте файлы",
+        "done": "Оптимизация завершена",
+        "developer": "Developer Broniks",
+        "select_first": "Добавьте хотя бы один файл.",
+        "save": "Выберите папку для сохранения",
+        "before": "До",
+        "after": "После",
+        "saved": "Сэкономлено",
+        "processing": "Обработка",
+        "log": "Лог",
+        "error": "Ошибка",
+        "original_size": "Исходный",
+        "result": "Результат",
+        "unsupported": "Неподдерживаемый формат",
+        "image": "Фото",
+        "video": "Видео",
+        "all_files": "Все поддерживаемые",
+        "images": "Изображения",
+        "videos": "Видео",
+        "crf_hint": "Меньше = лучше, но больше файл",
+        "privacy": "Файлы обрабатываются локально",
+        "no_ffmpeg": "FFmpeg не найден. Установите: pip install imageio-ffmpeg",
+    },
+    "en": {
+        "title": "Image & Video Optimizer",
+        "subtitle": "Fast image and video optimization",
+        "select": "＋  Add files",
+        "files": "files in queue",
+        "preview": "File queue",
+        "settings": "Settings",
+        "quality": "Image quality",
+        "vid_quality": "Video quality (CRF)",
+        "resize": "Maximum width",
+        "original": "Original size",
+        "optimize": "⚡  Optimize all",
+        "ready": "Ready to optimize",
+        "delete": "Delete",
+        "clear": "Clear all",
+        "none": "Add files",
+        "done": "Optimization complete",
+        "developer": "Developer Broniks",
+        "select_first": "Please add at least one file.",
+        "save": "Choose a folder to save",
+        "before": "Before",
+        "after": "After",
+        "saved": "Saved",
+        "processing": "Processing",
+        "log": "Log",
+        "error": "Error",
+        "original_size": "Original",
+        "result": "Result",
+        "unsupported": "Unsupported format",
+        "image": "Image",
+        "video": "Video",
+        "all_files": "All supported",
+        "images": "Images",
+        "videos": "Videos",
+        "crf_hint": "Lower = better, but larger file",
+        "privacy": "Files are processed locally",
+        "no_ffmpeg": "FFmpeg not found. Install: pip install imageio-ffmpeg",
+    }
+}
+
+
+# ================= UTILITIES =================
+
+def format_size(size_bytes):
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def is_image(filepath):
+    return Path(filepath).suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif']
+
+
+def is_video(filepath):
+    return Path(filepath).suffix.lower() in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.m4v']
+
+
+def compress_image(input_path, output_path, quality=85, max_size=None):
+    img = Image.open(input_path)
+    if img.mode in ('RGBA', 'P', 'LA') and output_path.lower().endswith(('.jpg', '.jpeg')):
+        img = img.convert('RGB')
+    if max_size:
+        w, h = img.size
+        if w > max_size or h > max_size:
+            ratio = min(max_size / w, max_size / h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
+    if output_path.lower().endswith(('.jpg', '.jpeg')):
+        img.save(output_path, 'JPEG', quality=quality, optimize=True)
+    elif output_path.lower().endswith('.png'):
+        img.save(output_path, 'PNG', optimize=True)
+    elif output_path.lower().endswith('.webp'):
+        img.save(output_path, 'WEBP', quality=quality)
+    else:
+        img.save(output_path, quality=quality)
+    return os.path.getsize(output_path)
+
+
+def compress_video(input_path, output_path, crf=28, max_width=None, progress_callback=None):
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    args = [ffmpeg_path, '-i', input_path, '-c:v', 'libx264', '-crf', str(crf),
+            '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '128k']
+    if max_width:
+        args.extend(['-vf', f"scale='min({max_width},iw)':-2"])
+    args.extend(['-movflags', '+faststart', '-y', output_path])
+
+    process = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True, encoding='utf-8', errors='replace'
+    )
+    total_duration = None
+    for line in process.stderr:
+        if 'Duration:' in line:
+            try:
+                time_str = line.split('Duration:')[1].split(',')[0].strip()
+                parts = time_str.split(':')
+                total_duration = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+            except:
+                pass
+        if 'time=' in line and total_duration:
+            try:
+                time_str = line.split('time=')[1].split(' ')[0]
+                parts = time_str.split(':')
+                current = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                if progress_callback:
+                    progress_callback(min(100, int((current / total_duration) * 100)))
+            except:
+                pass
+    process.wait()
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg error (code {process.returncode})")
+    return os.path.getsize(output_path)
+
+
+# ================= APP =================
+
+class App(ctk.CTk):
+
+    def __init__(self):
+        super().__init__()
+
+        self.lang = "ru"
+        self.files = []
+        self.preview_refs = []
+        self.is_processing = False
+
+        self.title("Image & Video Optimizer")
+        self.geometry("1100x780")
+        self.minsize(950, 650)
+        self.configure(fg_color=BG)
+
+        self.build_ui()
+
+    # ================= TRANSLATION =================
+
+    def t(self, key):
+        return TXT[self.lang].get(key, key)
+
+    def change_language(self, lang):
+        self.lang = lang
+
+        # Update all labels
+        self.subtitle.configure(text=self.t("subtitle"))
+        self.select_button.configure(text=self.t("select"))
+        self.preview_title.configure(text=self.t("preview"))
+        self.settings_title.configure(text=self.t("settings"))
+        self.quality_label.configure(text=self.t("quality"))
+        self.vid_quality_label.configure(text=self.t("vid_quality"))
+        self.resize_label.configure(text=self.t("resize"))
+        self.optimize_button.configure(text=self.t("optimize"))
+        self.footer.configure(text=self.t("developer"))
+        self.dev_label.configure(text=self.t("developer"))
+
+        self.resize_menu.configure(
+            values=[
+                self.t("original"),
+                "1920 px",
+                "1600 px",
+                "1280 px",
+                "1024 px",
+                "800 px"
+            ]
+        )
+
+        self.crf_hint.configure(text=self.t("crf_hint"))
+
+        if not self.files:
+            self.empty_label.configure(text=self.t("none"))
+
+        self.update_queue()
+
+    # ================= UI =================
+
+    def build_ui(self):
+
+        # ---------- HEADER ----------
+
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=30, pady=(20, 8))
+
+        lang_row = ctk.CTkFrame(header, fg_color="transparent")
+        lang_row.pack(fill="x")
+
+        # Language switcher
+        language = ctk.CTkFrame(
+            lang_row, fg_color=CARD, corner_radius=10,
+            border_width=1, border_color=BORDER
+        )
+        language.pack(side="right", anchor="n")
+
+        self.ru_button = ctk.CTkButton(
+            language, text="RU", width=50, height=32, corner_radius=7,
+            fg_color=GREEN, hover_color=GREEN_HOVER, text_color="#031108",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda: self.change_language("ru")
+        )
+        self.ru_button.pack(side="left", padx=4, pady=4)
+
+        self.en_button = ctk.CTkButton(
+            language, text="EN", width=50, height=32, corner_radius=7,
+            fg_color=CARD2, hover_color=GREEN_HOVER, text_color=MUTED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda: self.change_language("en")
+        )
+        self.en_button.pack(side="left", padx=(0, 4), pady=4)
+
+        # Title
+        self.title_label = ctk.CTkLabel(
+            header, text=self.t("title"),
+            font=ctk.CTkFont(family="Arial Rounded MT Bold", size=42, weight="bold"),
+            text_color=TEXT, anchor="center", justify="center"
+        )
+        self.title_label.pack(fill="x", pady=(8, 0))
+
+        self.subtitle = ctk.CTkLabel(
+            header, text=self.t("subtitle"),
+            font=ctk.CTkFont(size=13), text_color=MUTED,
+            anchor="center", justify="center"
+        )
+        self.subtitle.pack(fill="x", pady=(4, 0))
+
+        # ---------- MAIN ----------
+
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=30, pady=10)
+
+        main.grid_columnconfigure(0, weight=2)
+        main.grid_columnconfigure(1, weight=3)
+        main.grid_rowconfigure(0, weight=1)
+
+        # =================================================
+        # LEFT PANEL
+        # =================================================
+
+        left = ctk.CTkFrame(
+            main, fg_color=CARD, corner_radius=18,
+            border_width=1, border_color=BORDER
+        )
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        # Add files button
+        self.select_button = ctk.CTkButton(
+            left, text=self.t("select"), height=48, corner_radius=11,
+            fg_color=GREEN, hover_color=GREEN_HOVER, text_color="#031108",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            command=self.add_files
+        )
+        self.select_button.pack(fill="x", padx=20, pady=(18, 8))
+
+        self.file_count = ctk.CTkLabel(
+            left, text=self.t("none"),
+            font=ctk.CTkFont(size=12), text_color=MUTED
+        )
+        self.file_count.pack(pady=(0, 10))
+
+        # Settings
+        self.settings_title = ctk.CTkLabel(
+            left, text="⚙  " + self.t("settings"),
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=GREEN
+        )
+        self.settings_title.pack(anchor="w", padx=20)
+
+        settings = ctk.CTkFrame(left, fg_color=CARD2, corner_radius=13)
+        settings.pack(fill="x", padx=20, pady=8)
+
+        # Image quality
+        quality_row = ctk.CTkFrame(settings, fg_color="transparent")
+        quality_row.pack(fill="x", padx=14, pady=(12, 0))
+
+        self.quality_label = ctk.CTkLabel(
+            quality_row, text=self.t("quality"), text_color=TEXT
+        )
+        self.quality_label.pack(side="left")
+
+        self.quality_value = ctk.CTkLabel(
+            quality_row, text="85%", text_color=GREEN,
+            font=ctk.CTkFont(weight="bold")
+        )
+        self.quality_value.pack(side="right")
+
+        self.slider = ctk.CTkSlider(
+            settings, from_=10, to=100, number_of_steps=90,
+            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
+            command=self.quality_change
+        )
+        self.slider.set(85)
+        self.slider.pack(fill="x", padx=14, pady=6)
+
+        # Video CRF
+        crf_row = ctk.CTkFrame(settings, fg_color="transparent")
+        crf_row.pack(fill="x", padx=14, pady=(4, 0))
+
+        self.vid_quality_label = ctk.CTkLabel(
+            crf_row, text=self.t("vid_quality"), text_color=TEXT
+        )
+        self.vid_quality_label.pack(side="left")
+
+        self.crf_value = ctk.CTkLabel(
+            crf_row, text="28", text_color=GREEN,
+            font=ctk.CTkFont(weight="bold")
+        )
+        self.crf_value.pack(side="right")
+
+        self.crf_slider = ctk.CTkSlider(
+            settings, from_=18, to=40, number_of_steps=22,
+            progress_color=GREEN, button_color=GREEN, button_hover_color=GREEN_HOVER,
+            command=self.crf_change
+        )
+        self.crf_slider.set(28)
+        self.crf_slider.pack(fill="x", padx=14, pady=6)
+
+        self.crf_hint = ctk.CTkLabel(
+            settings, text=self.t("crf_hint"),
+            font=ctk.CTkFont(size=10), text_color=MUTED
+        )
+        self.crf_hint.pack(anchor="w", padx=14, pady=(0, 4))
+
+        # Resize
+        resize_row = ctk.CTkFrame(settings, fg_color="transparent")
+        resize_row.pack(fill="x", padx=14, pady=(4, 12))
+
+        self.resize_label = ctk.CTkLabel(
+            resize_row, text=self.t("resize"), text_color=TEXT
+        )
+        self.resize_label.pack(side="left")
+
+        self.resize_menu = ctk.CTkOptionMenu(
+            resize_row,
+            values=[
+                self.t("original"),
+                "1920 px",
+                "1600 px",
+                "1280 px",
+                "1024 px",
+                "800 px"
+            ],
+            width=135, fg_color=CARD, button_color=GREEN, button_hover_color=GREEN_HOVER
+        )
+        self.resize_menu.pack(side="right")
+
+        # Status
+        self.status = ctk.CTkLabel(
+            left, text=self.t("ready"), text_color=MUTED,
+            font=ctk.CTkFont(size=12)
+        )
+        self.status.pack(pady=8)
+
+        # Progress bar
+        self.progress_bar = ctk.CTkProgressBar(
+            left, height=8, corner_radius=4,
+            progress_color=GREEN, fg_color=CARD2
+        )
+        self.progress_bar.pack(fill="x", padx=20, pady=(0, 8))
+        self.progress_bar.set(0)
+
+        # Optimize button
+        self.optimize_button = ctk.CTkButton(
+            left, text=self.t("optimize"), height=52, corner_radius=12,
+            fg_color=GREEN, hover_color=GREEN_HOVER, text_color="#031108",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            command=self.optimize
+        )
+        self.optimize_button.pack(fill="x", padx=20, pady=(0, 6))
+
+        # Clear button
+        self.clear_button = ctk.CTkButton(
+            left, text="✕  " + self.t("clear"), height=34, corner_radius=9,
+            fg_color="transparent", hover_color="#17251C", text_color=MUTED,
+            command=self.clear_all
+        )
+        self.clear_button.pack(fill="x", padx=20, pady=(0, 8))
+
+        # =================================================
+        # DEVELOPER BADGE (вместо лога)
+        # =================================================
+
+        dev_frame = ctk.CTkFrame(
+            left, fg_color=ACCENT_DARK, corner_radius=12,
+            border_width=1, border_color=GREEN
+        )
+        dev_frame.pack(fill="x", padx=20, pady=(4, 18))
+
+        ctk.CTkLabel(
+            dev_frame, text="●", font=ctk.CTkFont(size=12), text_color=GREEN
+        ).pack(side="left", padx=(14, 6), pady=12)
+
+        self.dev_label = ctk.CTkLabel(
+            dev_frame, text=self.t("developer"),
+            font=ctk.CTkFont(family="Arial Rounded MT Bold", size=15, weight="bold"),
+            text_color=GREEN
+        )
+        self.dev_label.pack(side="left", padx=(0, 16), pady=12)
+
+        # =================================================
+        # RIGHT PANEL
+        # =================================================
+
+        right = ctk.CTkFrame(
+            main, fg_color=CARD, corner_radius=18,
+            border_width=1, border_color=BORDER
+        )
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        self.preview_title = ctk.CTkLabel(
+            right, text=self.t("preview"),
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=GREEN
+        )
+        self.preview_title.pack(anchor="w", padx=20, pady=15)
+
+        self.queue = ctk.CTkScrollableFrame(
+            right, fg_color=ACCENT_DARK, corner_radius=12
+        )
+        self.queue.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
+        self.empty_label = ctk.CTkLabel(
+            self.queue, text=self.t("none"), text_color=MUTED
+        )
+        self.empty_label.pack(pady=100)
+
+        # ---------- FOOTER ----------
+
+        footer_frame = ctk.CTkFrame(self, fg_color="transparent")
+        footer_frame.pack(fill="x", padx=30, pady=(0, 12))
+
+        ctk.CTkFrame(footer_frame, height=1, fg_color=BORDER).pack(fill="x", pady=(0, 8))
+
+        footer_badge = ctk.CTkFrame(
+            footer_frame, fg_color=CARD, corner_radius=20,
+            border_width=1, border_color=GREEN
+        )
+        footer_badge.pack(pady=(0, 4))
+
+        ctk.CTkLabel(
+            footer_badge, text="●", font=ctk.CTkFont(size=10), text_color=GREEN
+        ).pack(side="left", padx=(16, 6), pady=8)
+
+        self.footer = ctk.CTkLabel(
+            footer_badge, text=self.t("developer"),
+            font=ctk.CTkFont(family="Arial Rounded MT Bold", size=14, weight="bold"),
+            text_color=GREEN
+        )
+        self.footer.pack(side="left", padx=(0, 18), pady=8)
+
+        ctk.CTkLabel(
+            footer_badge, text="🔒  " + self.t("privacy"),
+            font=ctk.CTkFont(size=10), text_color=MUTED
+        ).pack(side="left", padx=(0, 14), pady=8)
+
+    # =====================================================
+    # ADD FILES
+    # =====================================================
+
+    def add_files(self):
+        selected = filedialog.askopenfilenames(
+            title=self.t("select"),
+            filetypes=[
+                (self.t("all_files"),
+                 "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.mp4 *.mov *.avi *.webm *.mkv *.m4v"),
+                (self.t("images"), "*.jpg *.jpeg *.png *.webp *.bmp *.gif"),
+                (self.t("videos"), "*.mp4 *.mov *.avi *.webm *.mkv *.m4v"),
+            ]
+        )
+
+        if not selected:
+            return
+
+        for file in selected:
+            if file not in self.files:
+                self.files.append(file)
+
+        self.update_queue()
+
+    # =====================================================
+    # UPDATE QUEUE
+    # =====================================================
+
+    def update_queue(self):
+        for widget in self.queue.winfo_children():
+            widget.destroy()
+
+        self.preview_refs.clear()
+
+        if not self.files:
+            self.empty_label = ctk.CTkLabel(
+                self.queue, text=self.t("none"), text_color=MUTED
+            )
+            self.empty_label.pack(pady=100)
+            self.file_count.configure(text=self.t("none"))
+            return
+
+        self.file_count.configure(text=f"{len(self.files)} {self.t('files')}")
+
+        for index, path in enumerate(self.files):
+            self.create_file_card(index, path)
+
+    # =====================================================
+    # FILE CARD
+    # =====================================================
+
+    def create_file_card(self, index, path):
+        card = ctk.CTkFrame(
+            self.queue, fg_color=CARD2, corner_radius=12,
+            border_width=1, border_color=BORDER
+        )
+        card.pack(fill="x", padx=8, pady=5)
+
+        # Preview for images
+        if is_image(path):
+            try:
+                image = Image.open(path)
+                image.thumbnail((115, 95), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(image)
+                self.preview_refs.append(photo)
+
+                image_label = ctk.CTkLabel(card, image=photo, text="")
+                image_label.pack(side="left", padx=10, pady=10)
+            except Exception:
+                placeholder = ctk.CTkLabel(
+                    card, text="🖼", font=ctk.CTkFont(size=36),
+                    text_color=MUTED, width=115, height=95
+                )
+                placeholder.pack(side="left", padx=10, pady=10)
+        elif is_video(path):
+            placeholder = ctk.CTkLabel(
+                card, text="🎬", font=ctk.CTkFont(size=36),
+                text_color=MUTED, width=115, height=95
+            )
+            placeholder.pack(side="left", padx=10, pady=10)
+
+        # Info
+        info = ctk.CTkFrame(card, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=5)
+
+        filename = os.path.basename(path)
+        size = os.path.getsize(path) / (1024 * 1024)
+
+        if is_image(path):
+            type_text = f"🖼 {self.t('image')}"
+        elif is_video(path):
+            type_text = f"🎬 {self.t('video')}"
+        else:
+            type_text = "❓"
+
+        ctk.CTkLabel(
+            info, text=type_text,
+            font=ctk.CTkFont(size=10), text_color=GREEN
+        ).pack(anchor="w", pady=(10, 0))
+
+        ctk.CTkLabel(
+            info, text=filename,
+            text_color=TEXT, font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w", wraplength=220
+        ).pack(anchor="w", pady=(3, 3))
+
+        ctk.CTkLabel(
+            info, text=f"{size:.2f} MB",
+            text_color=MUTED, anchor="w"
+        ).pack(anchor="w")
+
+        status_lbl = ctk.CTkLabel(
+            info, text="", font=ctk.CTkFont(size=10), text_color=MUTED
+        )
+        status_lbl.pack(anchor="w", pady=(2, 0))
+
+        delete_button = ctk.CTkButton(
+            card, text="✕", width=35, height=35, corner_radius=8,
+            fg_color=DANGER, hover_color=DANGER_HOVER, text_color="white",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            command=lambda i=index: self.remove_file(i)
+        )
+        delete_button.pack(side="right", padx=12)
+
+    # =====================================================
+    # REMOVE ONE FILE
+    # =====================================================
+
+    def remove_file(self, index):
+        if self.is_processing:
+            return
+        if 0 <= index < len(self.files):
+            del self.files[index]
+            self.update_queue()
+
+    # =====================================================
+    # CLEAR ALL
+    # =====================================================
+
+    def clear_all(self):
+        if self.is_processing:
+            return
+        self.files.clear()
+        self.update_queue()
+        self.status.configure(text=self.t("ready"), text_color=MUTED)
+        self.progress_bar.set(0)
+
+    # =====================================================
+    # QUALITY CHANGE
+    # =====================================================
+
+    def quality_change(self, value):
+        self.quality_value.configure(text=f"{int(float(value))}%")
+
+    # =====================================================
+    # CRF CHANGE
+    # =====================================================
+
+    def crf_change(self, value):
+        self.crf_value.configure(text=f"{int(float(value))}")
+
+    # =====================================================
+    # LOG HELPER (отключено, вместо лога "Developer Broniks")
+    # =====================================================
+
+    def add_log(self, message):
+        # Логи отключены — вместо них отображается "Developer Broniks"
+        pass
+
+    # =====================================================
+    # OPTIMIZE
+    # =====================================================
+
+    def optimize(self):
+        if not self.files:
+            messagebox.showwarning("Image & Video Optimizer", self.t("select_first"))
+            return
+
+        if self.is_processing:
+            return
+
+        has_videos = any(is_video(f) for f in self.files)
+        if has_videos and not HAS_FFMPEG:
+            messagebox.showerror("FFmpeg", self.t("no_ffmpeg"))
+            return
+
+        folder = filedialog.askdirectory(title=self.t("save"))
+        if not folder:
+            return
+
+        self.is_processing = True
+        self.optimize_button.configure(state="disabled", text=f"⏳ {self.t('processing')}...")
+        self.select_button.configure(state="disabled")
+
+        thread = threading.Thread(target=self._optimize_thread, args=(folder,), daemon=True)
+        thread.start()
+
+    def _optimize_thread(self, output_dir):
+        quality = int(self.slider.get())
+        crf = int(self.crf_slider.get())
+        resize_value = self.resize_menu.get()
+
+        max_width = None
+        if resize_value != self.t("original"):
+            max_width = int(resize_value.replace(" px", ""))
+
+        total = len(self.files)
+        total_before = 0
+        total_after = 0
+        processed = 0
+
+        for i, filepath in enumerate(self.files):
+            filename = os.path.basename(filepath)
+            original_size = os.path.getsize(filepath)
+            total_before += original_size
+
+            self.after(0, lambda f=filename: self.status.configure(
+                text=f"{self.t('processing')}: {f}", text_color=TEXT
+            ))
+
+            progress_base = (i / total) * 100
+            self.after(0, lambda p=progress_base: self.progress_bar.set(p / 100))
+
+            try:
+                stem = Path(filepath).stem
+
+                if is_image(filepath):
+                    ext = Path(filepath).suffix.lower()
+                    if ext in ('.png', '.webp', '.bmp', '.gif'):
+                        out_name = f"{stem}_optimized.jpg"
+                    else:
+                        out_name = f"{stem}_optimized{ext}"
+                    output_path = os.path.join(output_dir, out_name)
+
+                    new_size = compress_image(
+                        filepath, output_path,
+                        quality=quality, max_size=max_width
+                    )
+
+                elif is_video(filepath):
+                    out_name = f"{stem}_optimized.mp4"
+                    output_path = os.path.join(output_dir, out_name)
+
+                    def on_progress(pct):
+                        fp = progress_base + (pct / total)
+                        self.after(0, lambda p=fp: self.progress_bar.set(p / 100))
+
+                    new_size = compress_video(
+                        filepath, output_path,
+                        crf=crf, max_width=max_width,
+                        progress_callback=on_progress
+                    )
+                else:
+                    continue
+
+                total_after += new_size
+                processed += 1
+
+            except Exception:
+                pass
+
+        total_saved = total_before - total_after
+        total_pct = (total_saved / total_before * 100) if total_before > 0 else 0
+
+        self.after(0, lambda: self.progress_bar.set(1.0))
+        self.after(0, lambda: self.status.configure(
+            text=f"✓ {self.t('done')}! {self.t('saved')}: {format_size(total_saved)}",
+            text_color=GREEN
+        ))
+        self.after(0, lambda: self.optimize_button.configure(
+            state="normal", text=self.t("optimize")
+        ))
+        self.after(0, lambda: self.select_button.configure(state="normal"))
+
+        self.is_processing = False
+
+        if processed > 0:
+            self.after(0, lambda: messagebox.showinfo(
+                self.t("done"),
+                f"{processed} {self.t('files')}\n\n"
+                f"{self.t('before')}: {format_size(total_before)}\n"
+                f"{self.t('after')}: {format_size(total_after)}\n"
+                f"{self.t('saved')}: {format_size(total_saved)} ({total_pct:.1f}%)"
+            ))
+
+
+# ================= START =================
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
